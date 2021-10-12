@@ -1,0 +1,589 @@
+---
+title: 'Note S2: Variant hotspot analysis'
+author: "Marzia A. Cremona"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    toc_depth: 3
+---
+
+```{r}
+library(readxl)
+library(writexl)
+library(PoissonBinomial)
+```
+
+
+# Oocytes
+
+## Mutations shared by oocytes from different animals
+
+### Mutation frequency estimation
+We estimate the random mutation frequency per nucleotide for our macaque oocyte samples in a conservative way, by counting only mutations found in exactly one oocyte of each macaque and dividing it by the total number of sequenced nucleotides (computed as the sum over all oocytes of the mean sequencing depth for that oocyte times the mtDNA length). Since D-loop generally shows a higher mutation frequency, we estimate this frequency separately for D-loop ($p_{D}$) and for the nucleotides outside of D-loop ($p_{nonD}$). Only oocytes with mean sequencing depth of at least 100x are considered (a total of 119 oocytes among 29 macaques). 
+
+Mutation frequency estimation:
+```{r}
+n_mut_D = 719
+n_mut_nonD = 1116
+nt_seq_D = 94814895
+nt_seq_nonD = 1352663373
+
+p_D = n_mut_D / nt_seq_D 
+p_D
+p_nonD = n_mut_nonD / nt_seq_nonD
+p_nonD
+```
+We obtain a random mutation frequency $p_{D}=7.58 \times 10^{-6}$ in the D-loop and $p_{nonD}=8.25 \times 10^{-7}$ outside of the D-loop.
+
+### Probability of calling a mutation in a certain oocyte
+We model the process of having a random mutation in a nucleotide of a single molecule as Bernoulli trial $X \sim B(1,p)$, where the probability $p$ is $p_{D}$ for the nucleotides in the D-loop and $p_{nonD}$ for the nucleotides outside the D-loop. 
+
+We assume that mutations occur independently in different sequenced molecules, hence the number of mutations per nucleotide in an oocyte is $Y \sim B(d,p)$, where $d$ is the mean sequencing depth of that oocyte. For each oocyte, we can then compute the probability of calling a mutation in a nucleotide as $q = P(Y \geq 1)$. 
+
+```{r}
+mut2 <- read_excel("2020-09_Rh_mut_freqs.xlsx", sheet = "Rh_mut_freq")
+
+# select only oocytes with mean depth >= 100x
+mut_Oo <- subset(mut2, (mean_depth_DCS >= 100) & (tissue == "oocyte") )
+```
+
+Number of oocytes:
+```{r}
+nrow(mut_Oo)
+```
+
+Number of macaques:
+```{r}
+length(unique(mut_Oo$macaque_ID))
+```
+
+Number of oocytes for each macaque:
+```{r}
+n_Oo = table(mut_Oo$macaque_ID)
+n_Oo
+```
+
+Statistics of number of oocytes for each macaque:
+```{r}
+hist(n_Oo, breaks = seq(0.5, max(n_Oo)+0.5), xlim = c(0,max(n_Oo))+0.5, xaxt = "n",
+     main = "Number of sequenced oocytes", xlab = "# oocytes", ylab = "# macaques")
+axis(side = 1, at = 1:max(n_Oo))
+```
+
+Compute the probability of calling a mutation in a nucleotide of D-loop $q_{D}$ and in a nucleotide outside of D-loop $q_{nonD}$:
+```{r}
+mut_Oo$q_D = 1 - pbinom(0, size = mut_Oo$mean_depth_DCS, prob = p_D)
+mut_Oo$q_nonD = 1 - pbinom(0, size = mut_Oo$mean_depth_DCS, prob = p_nonD)
+```
+```{r}
+barplot(mut_Oo$q_D, ylab = "Probability of calling a mutation", main = "D-loop")
+barplot(mut_Oo$q_nonD, ylab = "Probability of calling a mutation", main = "outside of D-loop")
+```
+
+### Probability of calling a mutation for each macaque
+For each macaque, we consider the number of oocyes sequenced $n_{Oo}$ (which ranges from 1 to 12). The number of oocytes of the same macaque with a mutation in a certain nucleotide is $W = W_1 + \dots + W_{n_{Oo}}$ with $W_i \sim B(1, q_i)$. Assuming independence, we can model $W$ with the Poisson binomial distribution $W \sim PB(n_{Oo}, q_1, \dots, q_{n_{Oo}})$. 
+**We can then compute the probability of observing a mutation in a nucleotide in at least one oocyte of a certain macaque by random chance as $m = P(W \geq 2)$**.
+
+```{r}
+prob_mut_Oo_macaque = cbind(tapply(mut_Oo$q_D, mut_Oo$macaque_ID, 
+                                   function(q_i){
+                                     1 - ppbinom(0, probs = q_i)
+                                   }), 
+                            tapply(mut_Oo$q_nonD, mut_Oo$macaque_ID, 
+                                   function(q_i){
+                                     1 - ppbinom(0, probs = q_i)
+                                   }))
+colnames(prob_mut_Oo_macaque) = c('m_D', 'm_nonD')
+prob_mut_Oo_macaque
+```
+
+### Probability of observing the same mutation in multiple macaques
+We now consider all mutations shared by oocytes of multiple macaques. If a mutation is shared by multiple oocytes of the same macaque, we consider it only once. 
+
+```{r}
+mut_shared2 <- read_excel("Rh_mutations.xlsx", sheet = "Rh_mutations")
+
+# select only oocytes
+mut_shared_Oo <- subset(mut_shared2, (tissue == "oocyte"))
+
+# select only relevant columns and merge mutations shared by multiple oocytes of the same macaque
+mut_shared_Oo = unique(mut_shared_Oo[,c("macaque_ID", "mutation", "mut_Rh", "gene_type")])
+head(mut_shared_Oo)
+```
+
+Observed distribution of number of macaques with a certain mutation:
+```{r}
+n_macaque_mut_Oo = table(mut_shared_Oo$mutation)
+n_macaque_mut_Oo = table(factor(n_macaque_mut_Oo, levels = 1:max(n_macaque_mut_Oo)))
+n_macaque_mut_Oo
+```
+```{r fig.height=5, fig.width=7}
+n_macaque_mut_Oo_NA = n_macaque_mut_Oo
+n_macaque_mut_Oo_NA[n_macaque_mut_Oo_NA==0] = NA
+barplot(n_macaque_mut_Oo_NA, log = "y", xlab = "# macaques with the mutation", 
+        ylab = "# mutations", main = "Oocyte mutations shared by macaques", las = 2)
+```
+
+Total number of mutations shared by multiple macaques:
+```{r}
+sum(n_macaque_mut_Oo[2:length(n_macaque_mut_Oo)])
+```
+
+Select only mutations shared by multiple macaques:
+```{r}
+n_Rh = as.data.frame(table(mut_shared_Oo$mutation))
+colnames(n_Rh) = c("mutation", "n_Rh")
+mut_shared_Oo = merge(mut_shared_Oo, n_Rh, by = "mutation")
+mut_shared_Oo = mut_shared_Oo[mut_shared_Oo$n_Rh>1,]
+head(mut_shared_Oo)
+```
+
+Check the total number of mutations shared by multiple macaques:
+```{r}
+length(unique(mut_shared_Oo$mutation))
+```
+
+Total number of mutations shared by multiple macaques inside and outside D-loop:
+```{r}
+mut_shared_Oo_unique = unique(mut_shared_Oo[,c("mutation", "gene_type")])
+c(length(mut_shared_Oo_unique$mutation[mut_shared_Oo_unique$gene_type=="D-loop"]), 
+  length(mut_shared_Oo_unique$mutation[mut_shared_Oo_unique$gene_type!="D-loop"]))
+```
+
+We consider the number of macaques with sequenced oocytes $n_{Rh}=29$. The number of macaques with a mutation in a certain nucleotide is $V = V_1 + \dots + V_{n_{Rh}}$ with $V_i \sim B(1, m_i)$. Assuming independence, we can model $V$ with the Poisson binomial distribution $V \sim PB(n_{Rh}, m_1, \dots, m_{n_{Rh}})$. 
+**We can then compute the probability of observing a mutation in one, two or more macaques by random chance as $P(V=v)$ for $v=1, \dots, n_{Rh}$**.
+
+```{r}
+n_Rh = length(unique(mut_shared_Oo$macaque_ID))
+
+prob_shared_Oo_Rh = cbind(dpbinom(1:n_Rh, probs = prob_mut_Oo_macaque[,"m_D"]), 
+                      dpbinom(1:n_Rh, probs = prob_mut_Oo_macaque[,"m_nonD"]))
+colnames(prob_shared_Oo_Rh) = c('P(V=v)_D', 'P(V=v)_nonD')
+row.names(prob_shared_Oo_Rh) = 1:n_Rh
+prob_shared_Oo_Rh
+```
+
+### Expected number of shared mutations
+Finally, we can compute the expected number of random mutations present at the same site in one, two or more macaques by multiplying the probability $P(V=v)$ by the mtDNA length (i.e., 1085 nucleotides for D-loop and 15479 nucleotides outside of D-loop). 
+
+```{r}
+nt_D = 1085
+nt_nonD = 15479
+
+expected_shared_Oo_Rh = t(t(prob_shared_Oo_Rh) * c(nt_D, nt_nonD))
+expected_shared_Oo_Rh = cbind(expected_shared_Oo_Rh, rowSums(expected_shared_Oo_Rh))
+colnames(expected_shared_Oo_Rh) = c('exp_mut_D', 'exp_mut_nonD', 'exp_mut_tot')
+expected_shared_Oo_Rh
+```
+
+Observed number of shared mutations:
+```{r}
+shared_Oo_Rh = cbind(expected_shared_Oo_Rh, 
+                     c(n_macaque_mut_Oo_NA, rep(NA, n_Rh-length(n_macaque_mut_Oo_NA))), 0)
+colnames(shared_Oo_Rh)[4:5] = c("obs_mut_tot", "delta")
+shared_Oo_Rh[,"delta"] = shared_Oo_Rh[,"obs_mut_tot"] - shared_Oo_Rh[,"exp_mut_tot"]
+shared_Oo_Rh
+```
+
+Total number of expected shared mutations:
+```{r}
+colSums(shared_Oo_Rh[-1,], na.rm = TRUE)
+```
+**We expect to observe around 178 mutation sites shared by different macaques (143 in D-loop and 35 outside D-loop). We actually observe 219 shared sites (168 in D-loop and 51 outside D-loop).**
+
+```{r fig.height=5, fig.width=7}
+shared_Oo_Rh_NA = shared_Oo_Rh[,c("exp_mut_tot","obs_mut_tot")]
+shared_Oo_Rh_NA[shared_Oo_Rh_NA<0.5] = NA
+barplot(t(shared_Oo_Rh_NA), xlab = "Number of macaques", ylab = "Number of mutations", 
+        main = "Mutations shared by oocytes of different macaques", log = "y", 
+        xlim = c(0,41), ylim = c(1,5000), beside = TRUE, col = c("blue", "red"), las = 2)
+legend("topright", legend = c("Expected", "Observed"), fill = c("blue", "red"))
+```
+
+### Hotspot mutations identification
+In order to better identify the hotspot mutations, i.e. the mutations that are shared by multiple macaques but are not expected to be shared, we consider each of 219 shared mutations and we compute the probability of observing it exactly in those macaques in which we are observing it. This way, we can rank the shared mutations based on how unusual they are, taking into consideration in which macaques we found them (hence, also the number of oocytes sequenced for those macaques and their sequencing depth). 
+
+For each of the 219 shared mutation, we consider the $n_{Rh,i}$ macaques in which we observed it. If the mutation is present in the macaques $j, \dots, j_{n_{Rh,i}}$ and is not present in the macaques $k, \dots, k_{n_{Rh}-n_{Rh,i}}$, assuming independence among random mutations in different macaques we obtain that the probability of observing such a mutation in exactly those macaques is $m_j \times \cdots \times m_{j_{n_{Rh,i}}} \times (1-m_k) \times \cdots \times (1-m_{k_{n_{Rh}-n_{Rh,i}}})$. 
+
+```{r}
+mut_shared_Oo_prob = unique(mut_shared_Oo[,c("mutation", "gene_type", "n_Rh")])
+mut_shared_Oo_prob$prob = unlist(lapply(unique(mut_shared_Oo$mutation), 
+                                     function(mutation){
+                                       mut_shared_i = mut_shared_Oo[mut_shared_Oo$mutation==mutation,]
+                                       if(mut_shared_i$gene_type[1]=="D-loop"){
+                                         m = prob_mut_Oo_macaque[,"m_D"]
+                                       }else{
+                                         m = prob_mut_Oo_macaque[,"m_nonD"]
+                                       }
+                                       j = names(m) %in% mut_shared_i$macaque_ID
+                                       return(prod(c(m[j], (1-m[!j]))))
+                                     }))
+mut_shared_Oo_prob = mut_shared_Oo_prob[order(mut_shared_Oo_prob$prob),]
+head(mut_shared_Oo_prob)
+```
+
+Save results:
+```{r}
+write_xlsx(mut_shared_Oo_prob, "shared_mutation_multiple_Rh_oocytes.xlsx")
+```
+
+
+
+
+# Liver
+
+## Mutations shared by liver from different animals
+
+### Mutation frequency estimation
+The random mutation frequency per nucleotide estimation is done similarly to the oocyte case, by counting all mutations found in liver tissue (in all 30 macaques, since the mean sequencing depth is pretty high for all of them) and dividing it by the total number of sequenced nucleotides. The random mutation frequency is estimated separately for D-loop. 
+
+Mutation frequency estimation:
+```{r}
+n_mut_D = 980
+n_mut_nonD = 8409
+nt_seq_D = 94745455
+nt_seq_nonD = 1351672717
+
+p_D = n_mut_D / nt_seq_D 
+p_D
+p_nonD = n_mut_nonD / nt_seq_nonD
+p_nonD
+```
+We obtain a random mutation frequency $p_{D}=1.03 \times 10^{-5}$ in the D-loop and $p_{nonD}=6.22 \times 10^{-6}$ outside of the D-loop.
+
+### Probability of calling a mutation for each macaque
+As above, we model the process of having a random mutation in a nucleotide of a single molecule as Bernoulli trial $X \sim B(1,p)$, where the probability $p$ is $p_{D}$ for the nucleotides in the D-loop and $p_{nonD}$ for the nucleotides outside the D-loop. 
+
+We assume that mutations occur independently in different sequenced molecules, hence the number of mutations per nucleotide in a liver sample is $Y \sim B(d,p)$, where $d$ is the mean sequencing depth of that liver sample. For each liver sample, we can then compute the probability of calling a mutation in a nucleotide as $q = P(Y \geq 1)$. 
+
+```{r}
+# select only liver samples with mean depth >= 100x
+mut_liver <- subset(mut2, (mean_depth_DCS >= 100) & (tissue == "liver") )
+```
+
+Number of macaques:
+```{r}
+length(unique(mut_liver$macaque_ID))
+```
+
+Compute the probability of calling a mutation in a nucleotide of D-loop $q_{D}$ and in a nucleotide outside of D-loop $q_{nonD}$:
+```{r}
+mut_liver$q_D = 1 - pbinom(0, size = mut_liver$mean_depth_DCS, prob = p_D)
+mut_liver$q_nonD = 1 - pbinom(0, size = mut_liver$mean_depth_DCS, prob = p_nonD)
+```
+```{r}
+barplot(mut_liver$q_D, ylab = "Probability of calling a mutation", main = "D-loop")
+barplot(mut_liver$q_nonD, ylab = "Probability of calling a mutation", main = "outside of D-loop")
+```
+
+### Probability of observing the same mutation in multiple macaques
+We now consider all mutations shared by liver samples of multiple macaques. 
+
+```{r}
+# select only liver
+mut_shared_liver <- subset(mut_shared2, (tissue == "liver"))
+
+# select only relevant columns
+mut_shared_liver = mut_shared_liver[,c("macaque_ID", "mutation", "mut_Rh", "gene_type")]
+head(mut_shared_liver)
+```
+
+Observed distribution of number of macaques with a certain mutation:
+```{r}
+n_macaque_mut_liver = table(mut_shared_liver$mutation)
+n_macaque_mut_liver = table(factor(n_macaque_mut_liver, levels = 1:max(n_macaque_mut_liver)))
+n_macaque_mut_liver
+```
+```{r fig.height=5, fig.width=8}
+n_macaque_mut_liver_NA = n_macaque_mut_liver
+n_macaque_mut_liver_NA[n_macaque_mut_liver_NA==0] = NA
+barplot(n_macaque_mut_liver_NA, log = "y", xlab = "# macaques with the mutation", 
+        ylab = "# mutations", main = "Liver mutations shared by macaques", las = 2)
+```
+
+Total number of mutations shared by multiple macaques:
+```{r}
+sum(n_macaque_mut_liver[2:length(n_macaque_mut_liver)])
+```
+
+Select only mutations shared by multiple macaques:
+```{r}
+n_Rh = as.data.frame(table(mut_shared_liver$mutation))
+colnames(n_Rh) = c("mutation", "n_Rh")
+mut_shared_liver = merge(mut_shared_liver, n_Rh, by = "mutation")
+mut_shared_liver = mut_shared_liver[mut_shared_liver$n_Rh>1,]
+head(mut_shared_liver)
+```
+
+Check the total number of mutations shared by multiple macaques:
+```{r}
+length(unique(mut_shared_liver$mutation))
+```
+
+Total number of mutations shared by multiple macaques inside and outside D-loop:
+```{r}
+mut_shared_liver_unique = unique(mut_shared_liver[,c("mutation", "gene_type")])
+c(length(mut_shared_liver_unique$mutation[mut_shared_liver_unique$gene_type=="D-loop"]), 
+  length(mut_shared_liver_unique$mutation[mut_shared_liver_unique$gene_type!="D-loop"]))
+```
+
+We consider the number of macaques with sequenced liver $n_{Rh}=30$. The number of macaques with a mutation in a certain nucleotide is $V = V_1 + \dots + V_{n_{Rh}}$ with $V_i \sim B(1, q_i)$. Assuming independence, we can model $V$ with the Poisson binomial distribution $V \sim PB(n_{Rh}, q_1, \dots, q_{n_{Rh}})$. 
+**We can then compute the probability of observing a mutation in one, two or more macaques by random chance as $P(V=v)$ for $v=1, \dots, n_{Rh}$**.
+
+```{r}
+n_Rh = length(unique(mut_shared_liver$macaque_ID))
+
+prob_shared_liver_Rh = cbind(dpbinom(1:n_Rh, probs = mut_liver$q_D), 
+                             dpbinom(1:n_Rh, probs = mut_liver$q_nonD))
+colnames(prob_shared_liver_Rh) = c('P(V=v)_D', 'P(V=v)_nonD')
+row.names(prob_shared_liver_Rh) = 1:n_Rh
+prob_shared_liver_Rh
+```
+
+### Expected number of shared mutations
+Finally, we can compute the expected number of random mutations present at the same site in one, two or more macaques by multiplying the probability $P(V=v)$ by the mtDNA length (i.e., 1085 nucleotides for D-loop and 15479 nucleotides outside of D-loop). 
+
+```{r}
+nt_D = 1085
+nt_nonD = 15479
+
+expected_shared_liver_Rh = t(t(prob_shared_liver_Rh) * c(nt_D, nt_nonD))
+expected_shared_liver_Rh = cbind(expected_shared_liver_Rh, rowSums(expected_shared_liver_Rh))
+colnames(expected_shared_liver_Rh) = c('exp_mut_D', 'exp_mut_nonD', 'exp_mut_tot')
+expected_shared_liver_Rh
+```
+
+Observed number of shared mutations:
+```{r}
+shared_liver_Rh = cbind(expected_shared_liver_Rh, 
+                        c(n_macaque_mut_liver_NA, 
+                          rep(NA, n_Rh-length(n_macaque_mut_liver_NA))), 0)
+colnames(shared_liver_Rh)[4:5] = c("obs_mut_tot", "delta")
+shared_liver_Rh[,"delta"] = shared_liver_Rh[,"obs_mut_tot"] - shared_liver_Rh[,"exp_mut_tot"]
+shared_liver_Rh
+```
+
+Total number of expected shared mutations:
+```{r}
+colSums(shared_liver_Rh[-1,], na.rm = TRUE)
+```
+**We expect to observe around 1787 mutation sites shared by different macaques (240 in D-loop and 1546 outside D-loop). We actually observe 1852 shared sites (177 in D-loop and 1675 outside D-loop).**
+
+```{r fig.height=5, fig.width=7}
+shared_liver_Rh_NA = shared_liver_Rh[,c("exp_mut_tot","obs_mut_tot")]
+shared_liver_Rh_NA[shared_liver_Rh_NA<0.5] = NA
+barplot(t(shared_liver_Rh_NA), xlab = "Number of macaques", ylab = "Number of mutations", 
+        main = "Mutations shared by liver samples of different macaques", log = "y", 
+        xlim = c(0,41), ylim = c(1,5000), beside = TRUE, col = c("blue", "red"))
+legend("topright", legend = c("Expected", "Observed"), fill = c("blue", "red"))
+```
+
+### Hotspot mutations identification
+In order to better identify the hotspot mutations, i.e. the mutations that are shared by multiple macaques but are not expected to be shared, we consider each of 1852 shared mutations and we compute the probability of observing it exactly in those macaques in which we are observing it. This way, we can rank the shared mutations based on how unusual they are, taking into consideration in which macaques we found them (hence, also the sequencing depth for each sample). 
+
+For each of the 1852 shared mutation, we consider the $n_{Rh,i}$ macaques in which we observed it. If the mutation is present in the macaques $j, \dots, j_{n_{Rh,i}}$ and is not present in the macaques $k, \dots, k_{n_{Rh}-n_{Rh,i}}$, assuming independence among random mutations in different macaques we obtain that the probability of observing such a mutation in exactly those macaques is $q_j \times \cdots \times q_{j_{n_{Rh,i}}} \times (1-q_k) \times \cdots \times (1-q_{k_{n_{Rh}-n_{Rh,i}}})$. 
+
+```{r}
+mut_shared_liver_prob = unique(mut_shared_liver[,c("mutation", "gene_type", "n_Rh")])
+mut_shared_liver_prob$prob = unlist(lapply(unique(mut_shared_liver$mutation), 
+                                           function(mutation){
+                                             mut_shared_i = mut_shared_liver[mut_shared_liver$mutation==mutation,]
+                                             if(mut_shared_i$gene_type[1]=="D-loop"){
+                                               q = mut_liver$q_D
+                                             }else{
+                                               q = mut_liver$q_nonD
+                                             }
+                                             j = mut_liver$macaque_ID %in% mut_shared_i$macaque_ID
+                                             return(prod(c(q[j], (1-q[!j]))))
+                                           }))
+mut_shared_liver_prob = mut_shared_liver_prob[order(mut_shared_liver_prob$prob),]
+head(mut_shared_liver_prob)
+```
+
+Save results:
+```{r}
+write_xlsx(mut_shared_liver_prob, "shared_mutation_multiple_Rh_liver.xlsx")
+```
+
+
+
+
+# Muscle
+
+## Mutations shared by muscle from different animals
+
+### Mutation frequency estimation
+The random mutation frequency per nucleotide estimation is done similarly to the oocyte and liver cases, by counting all mutations found in muscle tissue (in all 30 macaques, since the mean sequencing depth is pretty high for all of them) and dividing it by the total number of sequenced nucleotides. The random mutation frequency is estimated separately for D-loop. 
+
+Mutation frequency estimation:
+```{r}
+n_mut_D = 853
+n_mut_nonD = 4145
+nt_seq_D = 111848310
+nt_seq_nonD = 1595668194
+
+p_D = n_mut_D / nt_seq_D 
+p_D
+p_nonD = n_mut_nonD / nt_seq_nonD
+p_nonD
+```
+We obtain a random mutation frequency $p_{D}=7.63 \times 10^{-6}$ in the D-loop and $p_{nonD}=2.60 \times 10^{-6}$ outside of the D-loop.
+
+### Probability of calling a mutation for each macaque
+As above, we model the process of having a random mutation in a nucleotide of a single molecule as Bernoulli trial $X \sim B(1,p)$, where the probability $p$ is $p_{D}$ for the nucleotides in the D-loop and $p_{nonD}$ for the nucleotides outside the D-loop. 
+
+We assume that mutations occur independently in different sequenced molecules, hence the number of mutations per nucleotide in a muscle sample is $Y \sim B(d,p)$, where $d$ is the mean sequencing depth of that liver sample. For each muscle sample, we can then compute the probability of calling a mutation in a nucleotide as $q = P(Y \geq 1)$. 
+
+```{r}
+# select only muscle samples with mean depth >= 100x
+mut_muscle <- subset(mut2, (mean_depth_DCS >= 100) & (tissue == "muscle") )
+```
+
+Number of macaques:
+```{r}
+length(unique(mut_muscle$macaque_ID))
+```
+
+Compute the probability of calling a mutation in a nucleotide of D-loop $q_{D}$ and in a nucleotide outside of D-loop $q_{nonD}$:
+```{r}
+mut_muscle$q_D = 1 - pbinom(0, size = mut_muscle$mean_depth_DCS, prob = p_D)
+mut_muscle$q_nonD = 1 - pbinom(0, size = mut_muscle$mean_depth_DCS, prob = p_nonD)
+```
+```{r}
+barplot(mut_muscle$q_D, ylab = "Probability of calling a mutation", main = "D-loop")
+barplot(mut_muscle$q_nonD, ylab = "Probability of calling a mutation", main = "outside of D-loop")
+```
+
+### Probability of observing the same mutation in multiple macaques
+We now consider all mutations shared by muscle samples of multiple macaques. 
+
+```{r}
+# select only liver
+mut_shared_muscle <- subset(mut_shared2, (tissue == "muscle"))
+
+# select only relevant columns
+mut_shared_muscle = mut_shared_muscle[,c("macaque_ID", "mutation", "mut_Rh", "gene_type")]
+head(mut_shared_muscle)
+```
+
+Observed distribution of number of macaques with a certain mutation:
+```{r}
+n_macaque_mut_muscle = table(mut_shared_muscle$mutation)
+n_macaque_mut_muscle = table(factor(n_macaque_mut_muscle, levels = 1:max(n_macaque_mut_muscle)))
+n_macaque_mut_muscle
+```
+```{r fig.height=5, fig.width=8}
+n_macaque_mut_muscle_NA = n_macaque_mut_muscle
+n_macaque_mut_muscle_NA[n_macaque_mut_muscle_NA==0] = NA
+barplot(n_macaque_mut_muscle_NA, log = "y", xlab = "# macaques with the mutation", 
+        ylab = "# mutations", main = "Muscle mutations shared by macaques", las = 2)
+```
+
+Total number of mutations shared by multiple macaques:
+```{r}
+sum(n_macaque_mut_muscle[2:length(n_macaque_mut_muscle)])
+```
+
+Select only mutations shared by multiple macaques:
+```{r}
+n_Rh = as.data.frame(table(mut_shared_muscle$mutation))
+colnames(n_Rh) = c("mutation", "n_Rh")
+mut_shared_muscle = merge(mut_shared_muscle, n_Rh, by = "mutation")
+mut_shared_muscle = mut_shared_muscle[mut_shared_muscle$n_Rh>1,]
+head(mut_shared_muscle)
+```
+
+Check the total number of mutations shared by multiple macaques:
+```{r}
+length(unique(mut_shared_muscle$mutation))
+```
+
+Total number of mutations shared by multiple macaques inside and outside D-loop:
+```{r}
+mut_shared_muscle_unique = unique(mut_shared_muscle[,c("mutation", "gene_type")])
+c(length(mut_shared_muscle_unique$mutation[mut_shared_muscle_unique$gene_type=="D-loop"]), 
+  length(mut_shared_muscle_unique$mutation[mut_shared_muscle_unique$gene_type!="D-loop"]))
+```
+
+We consider the number of macaques with sequenced muscle $n_{Rh}=30$. The number of macaques with a mutation in a certain nucleotide is $V = V_1 + \dots + V_{n_{Rh}}$ with $V_i \sim B(1, q_i)$. Assuming independence, we can model $V$ with the Poisson binomial distribution $V \sim PB(n_{Rh}, q_1, \dots, q_{n_{Rh}})$. 
+**We can then compute the probability of observing a mutation in one, two or more macaques by random chance as $P(V=v)$ for $v=1, \dots, n_{Rh}$**.
+
+```{r}
+n_Rh = length(unique(mut_shared_muscle$macaque_ID))
+
+prob_shared_muscle_Rh = cbind(dpbinom(1:n_Rh, probs = mut_muscle$q_D), 
+                             dpbinom(1:n_Rh, probs = mut_muscle$q_nonD))
+colnames(prob_shared_muscle_Rh) = c('P(V=v)_D', 'P(V=v)_nonD')
+row.names(prob_shared_muscle_Rh) = 1:n_Rh
+prob_shared_muscle_Rh
+```
+
+### Expected number of shared mutations
+Finally, we can compute the expected number of random mutations present at the same site in one, two or more macaques by multiplying the probability $P(V=v)$ by the mtDNA length (i.e., 1085 nucleotides for D-loop and 15479 nucleotides outside of D-loop). 
+
+```{r}
+nt_D = 1085
+nt_nonD = 15479
+
+expected_shared_muscle_Rh = t(t(prob_shared_muscle_Rh) * c(nt_D, nt_nonD))
+expected_shared_muscle_Rh = cbind(expected_shared_muscle_Rh, rowSums(expected_shared_muscle_Rh))
+colnames(expected_shared_muscle_Rh) = c('exp_mut_D', 'exp_mut_nonD', 'exp_mut_tot')
+expected_shared_muscle_Rh
+```
+
+Observed number of shared mutations:
+```{r}
+shared_muscle_Rh = cbind(expected_shared_muscle_Rh, 
+                         c(n_macaque_mut_muscle_NA, 
+                           rep(NA, n_Rh-length(n_macaque_mut_muscle_NA))), 0)
+colnames(shared_muscle_Rh)[4:5] = c("obs_mut_tot", "delta")
+shared_muscle_Rh[,"delta"] = shared_muscle_Rh[,"obs_mut_tot"] - shared_muscle_Rh[,"exp_mut_tot"]
+shared_muscle_Rh
+```
+
+Total number of expected shared mutations:
+```{r}
+colSums(shared_muscle_Rh[-1,], na.rm = TRUE)
+```
+**We expect to observe around 644 mutation sites shared by different macaques (196 in D-loop and 448 outside D-loop). We actually observe 882 shared sites (174 in D-loop and 708 outside D-loop).**
+
+```{r fig.height=5, fig.width=7}
+shared_muscle_Rh_NA = shared_muscle_Rh[,c("exp_mut_tot","obs_mut_tot")]
+shared_muscle_Rh_NA[shared_muscle_Rh_NA<0.5] = NA
+barplot(t(shared_muscle_Rh_NA), xlab = "Number of macaques", ylab = "Number of mutations", 
+        main = "Mutations shared by liver samples of different macaques", log = "y", 
+        xlim = c(0,41), ylim = c(1,5000), beside = TRUE, col = c("blue", "red"))
+legend("topright", legend = c("Expected", "Observed"), fill = c("blue", "red"))
+```
+
+### Hotspot mutations identification
+In order to better identify the hotspot mutations, i.e. the mutations that are shared by multiple macaques but are not expected to be shared, we consider each of 882 shared mutations and we compute the probability of observing it exactly in those macaques in which we are observing it. This way, we can rank the shared mutations based on how unusual they are, taking into consideration in which macaques we found them (hence, also the sequencing depth for each sample). 
+
+For each of the 882 shared mutation, we consider the $n_{Rh,i}$ macaques in which we observed it. If the mutation is present in the macaques $j, \dots, j_{n_{Rh,i}}$ and is not present in the macaques $k, \dots, k_{n_{Rh}-n_{Rh,i}}$, assuming independence among random mutations in different macaques we obtain that the probability of observing such a mutation in exactly those macaques is $q_j \times \cdots \times q_{j_{n_{Rh,i}}} \times (1-q_k) \times \cdots \times (1-q_{k_{n_{Rh}-n_{Rh,i}}})$. 
+
+```{r}
+mut_shared_muscle_prob = unique(mut_shared_muscle[,c("mutation", "gene_type", "n_Rh")])
+mut_shared_muscle_prob$prob = unlist(lapply(unique(mut_shared_muscle$mutation), 
+                                           function(mutation){
+                                             mut_shared_i = mut_shared_muscle[mut_shared_muscle$mutation==mutation,]
+                                             if(mut_shared_i$gene_type[1]=="D-loop"){
+                                               q = mut_muscle$q_D
+                                             }else{
+                                               q = mut_muscle$q_nonD
+                                             }
+                                             j = mut_muscle$macaque_ID %in% mut_shared_i$macaque_ID
+                                             return(prod(c(q[j], (1-q[!j]))))
+                                           }))
+mut_shared_muscle_prob = mut_shared_muscle_prob[order(mut_shared_muscle_prob$prob),]
+head(mut_shared_muscle_prob)
+```
+
+Save results:
+```{r}
+write_xlsx(mut_shared_muscle_prob, "shared_mutation_multiple_Rh_muscle.xlsx")
+```
+

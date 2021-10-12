@@ -1,0 +1,155 @@
+---
+title: 'Note S1: Analysis of mutations shared by oocytes of the same animal'
+author: "Marzia A. Cremona"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  html_notebook:
+    toc: yes
+    toc_float: yes
+    toc_depth: 3
+---
+
+```{r}
+library(readxl)
+library(writexl)
+library(PoissonBinomial)
+```
+
+
+# Mutations shared by oocytes from the same animal
+We observed 56 mutation sites (corresponding to 117 mutations) shared by oocytes of the same animal. In order to understand how likely it is to observe such shared mutations by random chance, we build a probabilistic model which takes into consideration the generally higher mutation rate in D-loop than outside D-loop, the number of sequenced oocytes (with mean DCS depth of at least 100×) in each animal and the mean DCS depth of each sequenced oocyte. Using this model, we are able to compute the expected number of shared mutation sites in each of the 29 animals (with sequenced oocytes) in our study. 
+
+## Mutation frequency estimation
+We estimate the random mutation frequency per nucleotide for our macaque oocyte samples in a conservative way, by counting only mutations found in exactly one oocyte of each macaque and dividing it by the total number of sequenced nucleotides (computed as the sum over all oocytes of the mean sequencing depth for that oocyte times the mtDNA length). Since D-loop generally shows a higher mutation frequency, we estimate this frequency separately for D-loop ($p_{D}$) and for the nucleotides outside of D-loop ($p_{nonD}$). Only oocytes with mean sequencing depth of at least 100x are considered (a total of 119 oocytes among 29 macaques). 
+
+Mutation frequency estimation:
+```{r}
+n_mut_D = 719
+n_mut_nonD = 1116
+nt_seq_D = 94814895
+nt_seq_nonD = 1352663373
+
+p_D = n_mut_D / nt_seq_D 
+p_D
+p_nonD = n_mut_nonD / nt_seq_nonD
+p_nonD
+```
+We obtain a random mutation frequency $p_{D}=7.58 \times 10^{-6}$ in the D-loop and $p_{nonD}=8.25 \times 10^{-7}$ outside of the D-loop.
+
+## Probability of calling a mutation in a certain oocyte
+We model the process of having a random mutation in a nucleotide of a single molecule as Bernoulli trial $X \sim B(1,p)$, where the probability $p$ is $p_{D}$ for the nucleotides in the D-loop and $p_{nonD}$ for the nucleotides outside the D-loop. 
+
+We assume that mutations occur independently in different sequenced molecules, hence the number of mutations per nucleotide in an oocyte is $Y \sim B(d,p)$, where $d$ is the mean sequencing depth of that oocyte. For each oocyte, we can then compute the probability of calling a mutation in a nucleotide as $q = P(Y \geq 1)$. 
+
+```{r}
+mut2 <- read_excel("2020-09_Rh_mut_freqs.xlsx", sheet = "Rh_mut_freq")
+
+# select only oocytes with mean depth >= 100x
+mut_Oo <- subset(mut2, (mean_depth_DCS >= 100) & (tissue == "oocyte") )
+```
+
+Number of oocytes:
+```{r}
+nrow(mut_Oo)
+```
+
+Number of macaques:
+```{r}
+length(unique(mut_Oo$macaque_ID))
+```
+
+Number of oocytes for each macaque:
+```{r}
+n_Oo = table(mut_Oo$macaque_ID)
+n_Oo
+```
+
+Statistics of number of oocytes for each macaque:
+```{r}
+hist(n_Oo, breaks = seq(0.5, max(n_Oo)+0.5), xlim = c(0,max(n_Oo))+0.5, xaxt = "n",
+     main = "Number of sequenced oocytes", xlab = "# oocytes", ylab = "# macaques")
+axis(side = 1, at = 1:max(n_Oo))
+```
+```{r}
+summary(as.numeric(n_Oo))
+```
+
+Compute the probability of calling a mutation in a nucleotide of D-loop $q_{D}$ and in a nucleotide outside of D-loop $q_{nonD}$:
+```{r}
+mut_Oo$q_D = 1 - pbinom(0, size = mut_Oo$mean_depth_DCS, prob = p_D)
+mut_Oo$q_nonD = 1 - pbinom(0, size = mut_Oo$mean_depth_DCS, prob = p_nonD)
+```
+```{r}
+barplot(mut_Oo$q_D, ylab = "Probability of calling a mutation", main = "D-loop")
+barplot(mut_Oo$q_nonD, ylab = "Probability of calling a mutation", main = "outside of D-loop")
+```
+
+## Probability of observing the same mutation in multiple oocytes of the same macaque
+For each macaque, we consider the number of oocyes sequenced $n_{Oo}$ (which ranges from 1 to 12). The number of oocytes of the same macaque with a mutation in a certain nucleotide is $W = W_1 + \dots + W_{n_{Oo}}$ with $W_i \sim B(1, q_i)$. Assuming independence, we can model $W$ with the Poisson binomial distribution $W \sim PB(n_{Oo}, q_1, \dots, q_{n_{Oo}})$. 
+**We can then compute the probability of observing the same mutation in two or more oocytes of the same macaque by random chance as $s = P(W \geq 2)$**.
+
+```{r}
+barplot(n_Oo, las = 2, ylab = "# oocytes", main = "# oocytes per macaque")
+```
+
+```{r}
+prob_shared_Oo = cbind(tapply(mut_Oo$q_D, mut_Oo$macaque_ID, 
+                              function(q_i){
+                                1 - ppbinom(1, probs = q_i)
+                              }), 
+                       tapply(mut_Oo$q_nonD, mut_Oo$macaque_ID, 
+                              function(q_i){
+                                1 - ppbinom(1, probs = q_i)
+                              }))
+colnames(prob_shared_Oo) = c('s_D', 's_nonD')
+prob_shared_Oo
+```
+
+## Expected number of shared mutations
+Finally, we can compute the expected number of random mutations present at the same site in two or more oocytes of the same macaque by multiplying the probability $p$ by the mtDNA length (i.e., 1085 nucleotides for D-loop and 15479 nucleotides outside of D-loop). 
+
+```{r}
+nt_D = 1085
+nt_nonD = 15479
+
+expected_shared_Oo = t(t(prob_shared_Oo) * c(nt_D, nt_nonD))
+expected_shared_Oo = cbind(expected_shared_Oo, rowSums(expected_shared_Oo))
+colnames(expected_shared_Oo) = c('exp_mut_D', 'exp_mut_nonD', 'exp_mut_tot')
+expected_shared_Oo
+```
+
+Observed number of shared mutations:
+```{r}
+shared_Oo = cbind(n_Oo, expected_shared_Oo, 0, 0)
+colnames(shared_Oo)[5:6] = c("obs_mut_tot", "delta")
+shared_Oo["Rh017","obs_mut_tot"] = 1
+shared_Oo["Rh024","obs_mut_tot"] = 3
+shared_Oo["Rh064","obs_mut_tot"] = 18
+shared_Oo["Rh081","obs_mut_tot"] = 3
+shared_Oo["Rh086","obs_mut_tot"] = 2
+shared_Oo["Rh094","obs_mut_tot"] = 3
+shared_Oo["Rh104","obs_mut_tot"] = 7
+shared_Oo["Rh105","obs_mut_tot"] = 19
+shared_Oo[,"delta"] = shared_Oo[,"obs_mut_tot"] - shared_Oo[,"exp_mut_tot"]
+shared_Oo
+```
+
+Total number of expected shared mutations:
+```{r}
+colSums(shared_Oo[,2:4])
+```
+**We expect to observe around 19 mutation sites shared by oocytes of the same macaque (16 in D-loop and 3 outside D-loop). We actually observe 56 shared sites (52 in D-loop and 4 outside D-loop).**
+
+```{r fig.height=6, fig.width=6}
+plot(shared_Oo[,"exp_mut_tot"], shared_Oo[,"obs_mut_tot"], xlab = "Expected # mutations", 
+     ylab = "Observed # mutations", main = "Mutations shared by oocytes of the same macaque", 
+     xlim = c(0, 7.5))
+abline(0, 1, lty = 3, col = "darkgray")
+index_text = which(shared_Oo[,"delta"] > 1)
+text(shared_Oo[index_text,"exp_mut_tot"], shared_Oo[index_text,"obs_mut_tot"], 
+     row.names(shared_Oo)[index_text], pos = 4)
+```
+**Macaques Rh064, Rh081, Rh086 and Rh104 have more mutation sites shared by their oocytes then expected by random chance.**
+
