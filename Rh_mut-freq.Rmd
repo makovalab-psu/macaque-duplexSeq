@@ -293,6 +293,47 @@ ggsave(filename="2021-03-08_mut_freq_d100_model_pred.pdf", plot=p, , width = 11,
 p
 ```
 
+```{r}
+age_plot = seq(min(mut$age_years),max(mut$age_years),length.out = 50)
+data_plot = data.frame(tissue = rep(levels(mut$tissue), each=50),
+                       age_years = rep(age_plot, 4),
+                       age_years_scaled = rep((age_plot-mean(mut$age_years))/sd(mut$age_years), 4))
+data_plot$mut_freq = predict(glmer_results, data_plot, re.form=~0, type='response')
+
+# bootstrap for computing CI using quantile approach
+predFun <- function(fit){
+  predict(fit, data_plot, re.form=~0, type='response')
+}
+merBoot = bootMer(glmer_results, FUN=predFun, nsim=100)
+CIlevel = 0.95
+data_plot$mut_freq_CIlower = apply(merBoot$t, 2, function(x) as.numeric(quantile(x, probs=(1-CIlevel)/2, na.rm=TRUE)))
+data_plot$mut_freq_CIupper = apply(merBoot$t, 2, function(x) as.numeric(quantile(x, probs=(1+CIlevel)/2, na.rm=TRUE)))
+```
+
+```{r fig.height=7, fig.width=11}
+options(repr.plot.width=11, repr.plot.height=7)
+
+p <- ggplot(mut, aes(x=age_years, y=mut_freq, color=tissue)) + 
+  geom_point(shape=16, size=4, alpha=0.9) +
+  scale_color_manual(values=c("green", "red","blue", "black")) +
+  theme_classic() +
+  labs(title="",x="Age [years]",y="Mutation frequency [substitutions/bp]") +
+  theme(axis.text.x = element_text(size=20, color="black"),axis.text.y = element_text(size=20, color="black"), axis.title.x = element_text(size=20), axis.title.y = element_text(size=20)) +
+  guides(color=guide_legend(title="Tissue type")) +
+  theme(legend.text=element_text(size=20)) +
+  theme(legend.title=element_text(size=20, face="bold")) +
+  theme(plot.title = element_text(size=20, lineheight=.8, face="bold", hjust = 0.5)) +
+  
+  #geom_point(mut, mapping = aes(x = age_years, y = fitted(glmer_results), color=tissue), shape = 3, size = 4) + 
+  geom_line(data_plot, mapping = aes(x = age_years, y = mut_freq, color=tissue), lwd = 1.5) +
+  
+  geom_ribbon(data_plot, mapping = aes(x=age_years, ymax=mut_freq_CIlower, ymin=mut_freq_CIupper), fill="gray", alpha=.25)
+
+ggsave(filename="2021-12-23_mut_freq_d100_model_pred_CI.pdf", plot=p, , width = 11, height = 7)
+
+p
+```
+
 ```{r fig.height=7, fig.width=11}
 options(repr.plot.width=11, repr.plot.height=7)
 
@@ -320,6 +361,7 @@ ggsave(filename="2021-03-08_mut_freq_d100_model_pred_no_plus.pdf", plot=p, , wid
 
 p
 ```
+
 
 
 # Piecewise model only for oocytes, break chosen by AIC/BIC
@@ -572,6 +614,49 @@ ggsave(filename="2021-04-03_mut_freq_d100_model_pred_breakAIC_oocyte.pdf", plot=
 p
 ```
 
+
+```{r}
+age_plot = seq(min(mut$age_years),max(mut$age_years),length.out = 50)
+data_plot = data.frame(tissue = rep(levels(mut$tissue), each=50),
+                       age_years = rep(age_plot, 4),
+                       age_years_scaled = rep((age_plot-mean(mut$age_years))/sd(mut$age_years), 4))
+data_plot$age_break_var = ( data_plot$age_years_scaled > age_break_scaled ) * ( data_plot$age_years_scaled - age_break_scaled ) * ( data_plot$tissue == "oocyte" )
+data_plot$mut_freq = predict(glmer_results_break, data_plot, re.form=~0, type='response')
+
+# bootstrap for computing CI using quantile approach
+predFun <- function(fit){
+  predict(fit, data_plot, re.form=~0, type='response')
+}
+merBoot = bootMer(glmer_results_break, FUN=predFun, nsim=100)
+CIlevel = 0.95
+data_plot$mut_freq_CIlower = apply(merBoot$t, 2, function(x) as.numeric(quantile(x, probs=(1-CIlevel)/2, na.rm=TRUE)))
+data_plot$mut_freq_CIupper = apply(merBoot$t, 2, function(x) as.numeric(quantile(x, probs=(1+CIlevel)/2, na.rm=TRUE)))
+```
+
+```{r fig.height=7, fig.width=11}
+options(repr.plot.width=11, repr.plot.height=7)
+
+p <- ggplot(mut, aes(x=age_years, y=mut_freq, color=tissue)) + 
+  geom_point(shape=16, size=4, alpha=0.9) +
+  scale_color_manual(values=c("green", "red","blue", "black")) +
+  theme_classic() +
+  labs(title="",x="Age [years]",y="Mutation frequency [substitutions/bp]") +
+  theme(axis.text.x = element_text(size=20, color="black"),axis.text.y = element_text(size=20, color="black"), axis.title.x = element_text(size=20), axis.title.y = element_text(size=20)) +
+  guides(color=guide_legend(title="Tissue type")) +
+  theme(legend.text=element_text(size=20)) +
+  theme(legend.title=element_text(size=20, face="bold")) +
+  theme(plot.title = element_text(size=20, lineheight=.8, face="bold", hjust = 0.5)) +
+  
+  #geom_point(mut, mapping = aes(x = age_years, y = fitted(glmer_results), color=tissue), shape = 3, size = 4) + 
+  geom_line(data_plot, mapping = aes(x = age_years, y = mut_freq, color=tissue), lwd = 1.5) +
+  
+  geom_ribbon(data_plot, mapping = aes(x=age_years, ymax=mut_freq_CIlower, ymin=mut_freq_CIupper), fill="gray", alpha=.25)
+
+ggsave(filename="2021-12-23_mut_freq_d100_model_pred_breakAIC_oocyte_CI.pdf", plot=p, , width = 11, height = 7)
+
+p
+```
+
 ```{r fig.height=7, fig.width=11}
 options(repr.plot.width=11, repr.plot.height=7)
 
@@ -600,4 +685,3 @@ ggsave(filename="2021-04-03_mut_freq_d100_model_pred_breakAIC_oocyte_no_plus.pdf
 
 p
 ```
-
